@@ -1,33 +1,43 @@
-run:
-  timeout: 5m
-
+version: "2"
 linters:
   enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - gosec
-    - revive
     - bodyclose
-    - unconvert
+    - gosec
     - misspell
+    - revive
+    - unconvert
+  settings:
+    gosec:
+      excludes:
+        - G104
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gosec
+        path: _test\.go
+    paths:
+      - bin
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
     - goimports
-
-linters-settings:
-  gosec:
-    excludes:
-      - G104 # unhandled errors already caught by errcheck
-  revive:
-    rules:
-      - name: exported
-        disabled: false
-
-issues:
-  exclude-dirs:
-    - bin
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
+  exclusions:
+    generated: lax
+    paths:
+      - bin
+      - third_party$
+      - builtin$
+      - examples$
