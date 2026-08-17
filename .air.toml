@@ -1,0 +1,15 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/moira ./cmd/moira"
+  bin = "./tmp/moira"
+  include_ext = ["go", "yaml"]
+  exclude_dir = ["tmp", "bin", "docs", ".git"]
+  delay = 200
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true

@@ -1,0 +1,33 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosec
+    - revive
+    - bodyclose
+    - unconvert
+    - misspell
+    - gofmt
+    - goimports
+
+linters-settings:
+  gosec:
+    excludes:
+      - G104 # unhandled errors already caught by errcheck
+  revive:
+    rules:
+      - name: exported
+        disabled: false
+
+issues:
+  exclude-dirs:
+    - bin
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec

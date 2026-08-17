@@ -1,0 +1,15 @@
+{
+  "go.lintTool": "golangci-lint",
+  "go.lintOnSave": "package",
+  "go.formatTool": "goimports",
+  "editor.formatOnSave": true,
+  "[go]": {
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "evenBetterToml.schema.enabled": false,
+  "evenBetterToml.schema.associations": {
+    "**/.air.toml": ""
+  }
+}
