@@ -1,6 +1,11 @@
-.PHONY: setup build test lint fmt vet tidy hooks kind-up kind-down dev run ci
+.PHONY: setup build test lint fmt vet tidy hooks kind-up kind-down dev run ci check-shell
 
 BINARY := moira
+
+check-shell:
+ifeq ($(OS),Windows_NT)
+	$(error This Makefile must be run from WSL2, not native Windows/PowerShell. Run 'wsl' first, see CONTRIBUTING.md)
+endif
 
 setup:
 	go mod download
