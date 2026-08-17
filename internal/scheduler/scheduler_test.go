@@ -26,11 +26,16 @@ func readyNode(name string) *corev1.Node {
 	}
 }
 
-func TestPickNode_ReturnsReadyNode(t *testing.T) {
-	client := fake.NewSimpleClientset(readyNode("node-1"), readyNode("node-2"))
+func TestPickNode_ReturnsFittingReadyNode(t *testing.T) {
+	pod := podWithRequests("test-pod", "500m", "256Mi")
+	client := fake.NewSimpleClientset(
+		pod,
+		nodeWithAllocatable("node-1", "2", "4Gi"),
+		nodeWithAllocatable("node-2", "2", "4Gi"),
+	)
 	s := New(client, discardLogger())
 
-	node, err := s.pickNode(context.Background())
+	node, err := s.pickNode(context.Background(), pod)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -39,21 +44,17 @@ func TestPickNode_ReturnsReadyNode(t *testing.T) {
 	}
 }
 
-func TestPickNode_NoReadyNodes_ReturnsError(t *testing.T) {
-	notReady := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
-		Status: corev1.NodeStatus{
-			Conditions: []corev1.NodeCondition{
-				{Type: corev1.NodeReady, Status: corev1.ConditionFalse},
-			},
-		},
-	}
-	client := fake.NewSimpleClientset(notReady)
+func TestPickNode_NoFittingNode_ReturnsError(t *testing.T) {
+	pod := podWithRequests("test-pod", "4", "8Gi")
+	client := fake.NewSimpleClientset(
+		pod,
+		nodeWithAllocatable("node-1", "2", "4Gi"),
+	)
 	s := New(client, discardLogger())
 
-	_, err := s.pickNode(context.Background())
+	_, err := s.pickNode(context.Background(), pod)
 	if err == nil {
-		t.Fatal("expected error when no ready nodes exist")
+		t.Fatal("expected error when no node has capacity for pod requests")
 	}
 }
 

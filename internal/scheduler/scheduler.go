@@ -60,15 +60,15 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 func (s *Scheduler) handlePod(ctx context.Context, pod *corev1.Pod) {
 	if pod.Spec.SchedulerName != SchedulerName {
-		return // not ours to schedule
+		return
 	}
 	if pod.Spec.NodeName != "" {
-		return // already scheduled
+		return
 	}
 
-	node, err := s.pickNode(ctx)
+	node, err := s.pickNode(ctx, pod)
 	if err != nil {
-		s.logger.Error("no node available", "pod", pod.Name, "err", err)
+		s.logger.Error("no node fits pod", "pod", pod.Name, "err", err)
 		return
 	}
 
@@ -82,27 +82,52 @@ func (s *Scheduler) handlePod(ctx context.Context, pod *corev1.Pod) {
 
 // pickNode is deliberately naive: uniform random choice among all
 // Ready nodes. No resource-fit check yet — that's Step 3.
-func (s *Scheduler) pickNode(ctx context.Context) (string, error) {
+func (s *Scheduler) pickNode(ctx context.Context, pod *corev1.Pod) (string, error) {
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return "", fmt.Errorf("listing nodes: %w", err)
 	}
 
-	var ready []string
-	for _, n := range nodes.Items {
-		for _, cond := range n.Status.Conditions {
-			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
-				ready = append(ready, n.Name)
-			}
+	allPods, err := s.client.CoreV1().Pods(corev1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("listing pods: %w", err)
+	}
+
+	podsByNode := make(map[string][]*corev1.Pod)
+	for i := range allPods.Items {
+		p := &allPods.Items[i]
+		if p.Spec.NodeName != "" {
+			podsByNode[p.Spec.NodeName] = append(podsByNode[p.Spec.NodeName], p)
 		}
 	}
 
-	if len(ready) == 0 {
-		return "", fmt.Errorf("no ready nodes")
+	var fitting []string
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
+		if !isReady(node) {
+			continue
+		}
+		if FitsNode(pod, node, podsByNode[node.Name]) {
+			fitting = append(fitting, node.Name)
+		}
 	}
 
-	// #nosec G404 -- randomness is only used to distribute scheduling work.
-	return ready[rand.Intn(len(ready))], nil
+	if len(fitting) == 0 {
+		return "", fmt.Errorf("no node fits pod requests")
+	}
+
+	// #nosec G404 -- non-cryptographic use: distributing scheduling load
+	// across fitting nodes, not generating security-sensitive values.
+	return fitting[rand.Intn(len(fitting))], nil
+}
+
+func isReady(node *corev1.Node) bool {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) bind(ctx context.Context, pod *corev1.Pod, node string) error {
