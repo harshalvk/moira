@@ -39,11 +39,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		fields.OneTermEqualSelector("spec.nodeName", ""),
 	)
 
-	_, controller := cache.NewInformer(
-		watchList,
-		&corev1.Pod{},
-		0,
-		cache.ResourceEventHandlerFuncs{
+	_, controller := cache.NewInformerWithOptions(cache.InformerOptions{
+		ListerWatcher: watchList,
+		ObjectType:    &corev1.Pod{},
+		ResyncPeriod:  0,
+		Handler: cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				pod, ok := obj.(*corev1.Pod)
 				if !ok {
@@ -52,7 +52,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				s.handlePod(ctx, pod)
 			},
 		},
-	)
+	})
 
 	controller.Run(ctx.Done())
 	return nil
@@ -101,6 +101,7 @@ func (s *Scheduler) pickNode(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no ready nodes")
 	}
 
+	// #nosec G404 -- randomness is only used to distribute scheduling work.
 	return ready[rand.Intn(len(ready))], nil
 }
 
