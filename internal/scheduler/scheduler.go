@@ -24,10 +24,11 @@ const SchedulerName = "moira"
 type Scheduler struct {
 	client kubernetes.Interface
 	logger *slog.Logger
+	cache  *AssumeCache
 }
 
 func New(client kubernetes.Interface, logger *slog.Logger) *Scheduler {
-	return &Scheduler{client: client, logger: logger}
+	return &Scheduler{client: client, logger: logger, cache: NewAssumeCache()}
 }
 
 // Run starts the informer loop and blocks until ctx is cancelled.
@@ -50,6 +51,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 					return
 				}
 				s.handlePod(ctx, pod)
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				pod, ok := newObj.(*corev1.Pod)
+				if !ok {
+					return
+				}
+				if pod.Spec.NodeName != "" {
+					// Real state now confirms the binding - safe to drop
+					// the assumption, real list data covers it from here
+					s.cache.Forget(pod)
+				}
 			},
 		},
 	})
@@ -77,6 +89,7 @@ func (s *Scheduler) handlePod(ctx context.Context, pod *corev1.Pod) {
 		return
 	}
 
+	s.cache.Assume(pod, node)
 	s.logger.Info("scheduled pod", "pod", pod.Name, "node", node)
 }
 
@@ -99,6 +112,13 @@ func (s *Scheduler) pickNode(ctx context.Context, pod *corev1.Pod) (string, erro
 		if p.Spec.NodeName != "" {
 			podsByNode[p.Spec.NodeName] = append(podsByNode[p.Spec.NodeName], p)
 		}
+	}
+
+	// Merge in assumed-but-not-yet-visible pods so a second pod scheduled
+	// in the same tick doesn't see stale, already-spoken-for capacity
+	for i := range nodes.Items {
+		nodeName := nodes.Items[i].Name
+		podsByNode[nodeName] = append(podsByNode[nodeName], s.cache.PodsForNode(nodeName)...)
 	}
 
 	var fitting []string
