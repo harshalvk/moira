@@ -3,6 +3,7 @@ package scheduler
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/klog/v2"
 )
 
 // podRequests sums CPU and memory requests across all containers in a pod.
@@ -52,4 +53,89 @@ func FitsNode(pod *corev1.Pod, node *corev1.Node, podsOnNode []*corev1.Pod) bool
 	}
 
 	return wantCPU.Cmp(availCPU) <= 0 && wantMem.Cmp(availMem) <= 0
+}
+
+// TolerationsSatisfyTaints reports whether pod's tolerations cover every
+// NoSchedule/NoExecute taint on node. PreferNoSchedule taints are advisory
+// (used in scoring, not filtering) and are skipped here.
+func TolerationsSatisfyTaints(pod *corev1.Pod, node *corev1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Effect == corev1.TaintEffectPreferNoSchedule {
+			continue
+		}
+		if !tolerates(pod.Spec.Tolerations, taint) {
+			return false
+		}
+	}
+	return true
+}
+
+func tolerates(tolerations []corev1.Toleration, taint corev1.Taint) bool {
+	for _, t := range tolerations {
+		if t.ToleratesTaint(klog.Background(), &taint, false) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesNodeAffinity reports whether node satisfies pod's required node
+// affinity (spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution).
+// Preferred affinity is scoring, not filtering — deferred to Phase 1 scoring work.
+// A pod with no required affinity trivially matches every node.
+func MatchesNodeAffinity(pod *corev1.Pod, node *corev1.Node) bool {
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		return true
+	}
+	required := pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	if required == nil {
+		return true
+	}
+
+	// A pod matches if ANY term in NodeSelectorTerms matches (OR semantics).
+	for _, term := range required.NodeSelectorTerms {
+		if matchesTerm(term, node) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesTerm requires ALL expressions within a term to match (AND semantics),
+// per the NodeSelectorTerm spec.
+func matchesTerm(term corev1.NodeSelectorTerm, node *corev1.Node) bool {
+	for _, expr := range term.MatchExpressions {
+		if !matchesExpression(expr, node.Labels) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesExpression(expr corev1.NodeSelectorRequirement, labels map[string]string) bool {
+	value, exists := labels[expr.Key]
+
+	switch expr.Operator {
+	case corev1.NodeSelectorOpIn:
+		return exists && contains(expr.Values, value)
+	case corev1.NodeSelectorOpNotIn:
+		return !exists || !contains(expr.Values, value)
+	case corev1.NodeSelectorOpExists:
+		return exists
+	case corev1.NodeSelectorOpDoesNotExist:
+		return !exists
+	default:
+		// Gt/Lt operators deferred — rare in practice, adding when a real
+		// use case needs them rather than speculatively now.
+		return false
+	}
+}
+
+func contains(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }

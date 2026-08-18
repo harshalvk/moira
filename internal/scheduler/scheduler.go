@@ -107,6 +107,12 @@ func (s *Scheduler) pickNode(ctx context.Context, pod *corev1.Pod) (string, erro
 		if !isReady(node) {
 			continue
 		}
+		if !TolerationsSatisfyTaints(pod, node) {
+			continue
+		}
+		if !MatchesNodeAffinity(pod, node) {
+			continue
+		}
 		if FitsNode(pod, node, podsByNode[node.Name]) {
 			fitting = append(fitting, node.Name)
 		}
