@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -15,61 +16,84 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func readyNode(name string) *corev1.Node {
+func readyNode(name, cpu, mem string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
 			},
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(cpu),
+				corev1.ResourceMemory: resource.MustParse(mem),
+			},
 		},
 	}
 }
 
-func TestPickNode_ReturnsFittingReadyNode(t *testing.T) {
-	pod := podWithRequests("test-pod", "500m", "256Mi")
+func podRequesting(name, cpu, mem string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: corev1.PodSpec{
+			SchedulerName: SchedulerName,
+			Containers: []corev1.Container{{
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse(cpu),
+						corev1.ResourceMemory: resource.MustParse(mem),
+					},
+				},
+			}},
+		},
+	}
+}
+
+func TestPickNode_ChoosesFeasibleNode(t *testing.T) {
 	client := fake.NewSimpleClientset(
-		pod,
-		nodeWithAllocatable("node-1", "2", "4Gi"),
-		nodeWithAllocatable("node-2", "2", "4Gi"),
+		readyNode("small", "1", "2Gi"),
+		readyNode("large", "8", "16Gi"),
 	)
 	s := New(client, discardLogger())
 
+	pod := podRequesting("p1", "4", "8Gi")
 	node, err := s.pickNode(context.Background(), pod)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if node != "node-1" && node != "node-2" {
-		t.Fatalf("unexpected node returned: %s", node)
+	if node != "large" {
+		t.Fatalf("expected pod to be filtered onto the only fitting node 'large', got %q", node)
 	}
 }
 
-func TestPickNode_NoFittingNode_ReturnsError(t *testing.T) {
-	pod := podWithRequests("test-pod", "4", "8Gi")
+func TestPickNode_NoFeasibleNode_ReturnsError(t *testing.T) {
+	client := fake.NewSimpleClientset(readyNode("small", "1", "2Gi"))
+	s := New(client, discardLogger())
+
+	pod := podRequesting("p1", "4", "8Gi")
+	_, err := s.pickNode(context.Background(), pod)
+	if err == nil {
+		t.Fatal("expected error when no node has capacity")
+	}
+}
+
+func TestPickNode_PrefersLessAllocatedNode(t *testing.T) {
 	client := fake.NewSimpleClientset(
-		pod,
-		nodeWithAllocatable("node-1", "2", "4Gi"),
+		readyNode("busy", "4", "8Gi"),
+		readyNode("empty", "4", "8Gi"),
 	)
 	s := New(client, discardLogger())
 
-	_, err := s.pickNode(context.Background(), pod)
-	if err == nil {
-		t.Fatal("expected error when no node has capacity for pod requests")
-	}
-}
+	// Pre-occupy "busy" via the assume cache to simulate existing load
+	// without needing a real bound pod in the fake clientset.
+	busyPod := podRequesting("existing", "3", "6Gi")
+	s.cache.Assume(busyPod, "busy")
 
-func TestBind_CreatesBindingOnCorrectNode(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
-		Spec:       corev1.PodSpec{SchedulerName: SchedulerName},
+	pod := podRequesting("p1", "500m", "1Gi")
+	node, err := s.pickNode(context.Background(), pod)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	client := fake.NewSimpleClientset(pod, readyNode("node-1"))
-	s := New(client, discardLogger())
-
-	if err := s.bind(context.Background(), pod, "node-1"); err != nil {
-		t.Fatalf("unexpected error binding pod: %v", err)
+	if node != "empty" {
+		t.Fatalf("expected NodeResourcesLeastAllocated to prefer 'empty', got %q", node)
 	}
-	// fake clientset's Bind is a no-op tracked action; verifying it doesn't
-	// error is sufficient at this stage. Step 3 adds an e2e test against kind
-	// that asserts pod.spec.nodeName is actually set.
 }

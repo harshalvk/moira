@@ -11,27 +11,38 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/harshalvk/moira/internal/framework"
+	"github.com/harshalvk/moira/internal/plugins/nodeaffinity"
+	"github.com/harshalvk/moira/internal/plugins/noderesourcesfit"
+	"github.com/harshalvk/moira/internal/plugins/noderesourcesleastallocated"
+	"github.com/harshalvk/moira/internal/plugins/tainttoleration"
 )
 
-// SchedulerName is the value pods must set in spec.schedulerName
-// to be picked up by moira instead of the default kube-scheduler.
 const SchedulerName = "moira"
 
-// Scheduler watches for unscheduled pods and binds them to a node.
-// This is intentionally the simplest possible implementation:
-// no filtering, no scoring — just proves the watch->decide->bind
-// loop end to end. Filtering/scoring arrive in Step 3.
 type Scheduler struct {
-	client kubernetes.Interface
-	logger *slog.Logger
-	cache  *AssumeCache
+	client   kubernetes.Interface
+	logger   *slog.Logger
+	cache    *AssumeCache
+	registry *framework.Registry
 }
 
 func New(client kubernetes.Interface, logger *slog.Logger) *Scheduler {
-	return &Scheduler{client: client, logger: logger, cache: NewAssumeCache()}
+	registry := framework.NewRegistry(logger)
+	registry.RegisterFilter(noderesourcesfit.New())
+	registry.RegisterFilter(tainttoleration.New())
+	registry.RegisterFilter(nodeaffinity.New())
+	registry.RegisterScore(noderesourcesleastallocated.New(), 1)
+
+	return &Scheduler{
+		client:   client,
+		logger:   logger,
+		cache:    NewAssumeCache(),
+		registry: registry,
+	}
 }
 
-// Run starts the informer loop and blocks until ctx is cancelled.
 func (s *Scheduler) Run(ctx context.Context) error {
 	watchList := cache.NewListWatchFromClient(
 		s.client.CoreV1().RESTClient(),
@@ -46,20 +57,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		ResyncPeriod:  0,
 		Handler: cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				pod, ok := obj.(*corev1.Pod)
-				if !ok {
-					return
+				if pod, ok := obj.(*corev1.Pod); ok {
+					s.handlePod(ctx, pod)
 				}
-				s.handlePod(ctx, pod)
 			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
+			UpdateFunc: func(_, newObj interface{}) {
 				pod, ok := newObj.(*corev1.Pod)
-				if !ok {
-					return
-				}
-				if pod.Spec.NodeName != "" {
-					// Real state now confirms the binding - safe to drop
-					// the assumption, real list data covers it from here
+				if ok && pod.Spec.NodeName != "" {
 					s.cache.Forget(pod)
 				}
 			},
@@ -71,10 +75,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func (s *Scheduler) handlePod(ctx context.Context, pod *corev1.Pod) {
-	if pod.Spec.SchedulerName != SchedulerName {
-		return
-	}
-	if pod.Spec.NodeName != "" {
+	if pod.Spec.SchedulerName != SchedulerName || pod.Spec.NodeName != "" {
 		return
 	}
 
@@ -93,17 +94,33 @@ func (s *Scheduler) handlePod(ctx context.Context, pod *corev1.Pod) {
 	s.logger.Info("scheduled pod", "pod", pod.Name, "node", node)
 }
 
-// pickNode is deliberately naive: uniform random choice among all
-// Ready nodes. No resource-fit check yet — that's Step 3.
 func (s *Scheduler) pickNode(ctx context.Context, pod *corev1.Pod) (string, error) {
+	nodeInfos, err := s.buildNodeInfos(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	feasible := s.registry.RunFilterPlugins(pod, nodeInfos)
+	if len(feasible) == 0 {
+		return "", fmt.Errorf("no node passes filters")
+	}
+
+	scores := s.registry.RunScorePlugins(pod, feasible)
+	return highestScored(scores), nil
+}
+
+// buildNodeInfos assembles per-node state: Ready nodes only, real pods from
+// a fresh list, plus assumed-but-unconfirmed pods from the AssumeCache
+// (closing the race from ADR 0005).
+func (s *Scheduler) buildNodeInfos(ctx context.Context) ([]*framework.NodeInfo, error) {
 	nodes, err := s.client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return "", fmt.Errorf("listing nodes: %w", err)
+		return nil, fmt.Errorf("listing nodes: %w", err)
 	}
 
 	allPods, err := s.client.CoreV1().Pods(corev1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return "", fmt.Errorf("listing pods: %w", err)
+		return nil, fmt.Errorf("listing pods: %w", err)
 	}
 
 	podsByNode := make(map[string][]*corev1.Pod)
@@ -114,37 +131,35 @@ func (s *Scheduler) pickNode(ctx context.Context, pod *corev1.Pod) (string, erro
 		}
 	}
 
-	// Merge in assumed-but-not-yet-visible pods so a second pod scheduled
-	// in the same tick doesn't see stale, already-spoken-for capacity
-	for i := range nodes.Items {
-		nodeName := nodes.Items[i].Name
-		podsByNode[nodeName] = append(podsByNode[nodeName], s.cache.PodsForNode(nodeName)...)
-	}
-
-	var fitting []string
+	var infos []*framework.NodeInfo
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
 		if !isReady(node) {
 			continue
 		}
-		if !TolerationsSatisfyTaints(pod, node) {
-			continue
-		}
-		if !MatchesNodeAffinity(pod, node) {
-			continue
-		}
-		if FitsNode(pod, node, podsByNode[node.Name]) {
-			fitting = append(fitting, node.Name)
+		pods := append(podsByNode[node.Name], s.cache.PodsForNode(node.Name)...)
+		infos = append(infos, &framework.NodeInfo{Node: node, Pods: pods})
+	}
+	return infos, nil
+}
+
+// highestScored picks the top-scoring node, breaking ties uniformly at
+// random — matches the real framework's tie-breaking behavior, avoids
+// always favoring whichever node happens to sort first.
+func highestScored(scores map[string]int64) string {
+	var best int64 = -1
+	var winners []string
+	for node, score := range scores {
+		switch {
+		case score > best:
+			best = score
+			winners = []string{node}
+		case score == best:
+			winners = append(winners, node)
 		}
 	}
-
-	if len(fitting) == 0 {
-		return "", fmt.Errorf("no node fits pod requests")
-	}
-
-	// #nosec G404 -- non-cryptographic use: distributing scheduling load
-	// across fitting nodes, not generating security-sensitive values.
-	return fitting[rand.Intn(len(fitting))], nil
+	// #nosec G404 -- random selection is used only for scheduler load distribution, not security.
+	return winners[rand.Intn(len(winners))]
 }
 
 func isReady(node *corev1.Node) bool {
@@ -158,15 +173,8 @@ func isReady(node *corev1.Node) bool {
 
 func (s *Scheduler) bind(ctx context.Context, pod *corev1.Pod, node string) error {
 	binding := &corev1.Binding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
-			UID:       pod.UID,
-		},
-		Target: corev1.ObjectReference{
-			Kind: "Node",
-			Name: node,
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID},
+		Target:     corev1.ObjectReference{Kind: "Node", Name: node},
 	}
 	return s.client.CoreV1().Pods(pod.Namespace).Bind(ctx, binding, metav1.CreateOptions{})
 }
