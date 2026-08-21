@@ -16,6 +16,7 @@ import (
 	"github.com/harshalvk/moira/internal/plugins/nodeaffinity"
 	"github.com/harshalvk/moira/internal/plugins/noderesourcesfit"
 	"github.com/harshalvk/moira/internal/plugins/noderesourcesleastallocated"
+	"github.com/harshalvk/moira/internal/plugins/noderesourcesmostallocated"
 	"github.com/harshalvk/moira/internal/plugins/tainttoleration"
 )
 
@@ -28,19 +29,31 @@ type Scheduler struct {
 	registry *framework.Registry
 }
 
-func New(client kubernetes.Interface, logger *slog.Logger) *Scheduler {
+func New(client kubernetes.Interface, logger *slog.Logger, cfg Config) (*Scheduler, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid scheduler config: %w", err)
+	}
+
 	registry := framework.NewRegistry(logger)
 	registry.RegisterFilter(noderesourcesfit.New())
 	registry.RegisterFilter(tainttoleration.New())
 	registry.RegisterFilter(nodeaffinity.New())
-	registry.RegisterScore(noderesourcesleastallocated.New(), 1)
+
+	switch cfg.Strategy {
+	case StrategyPack:
+		registry.RegisterScore(noderesourcesmostallocated.New(), 1)
+	default:
+		registry.RegisterScore(noderesourcesleastallocated.New(), 1)
+	}
+
+	logger.Info("scheduler configured", "strategy", cfg.Strategy)
 
 	return &Scheduler{
 		client:   client,
 		logger:   logger,
 		cache:    NewAssumeCache(),
 		registry: registry,
-	}
+	}, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {

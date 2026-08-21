@@ -29,10 +29,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg := scheduler.DefaultConfig()
+	if strategy := os.Getenv("MOIRA_STRATEGY"); strategy != "" {
+		cfg.Strategy = scheduler.Strategy(strategy)
+	}
+
+	s, err := scheduler.New(client, logger, cfg)
+	if err != nil {
+		logger.Error("failed to construct scheduler", "err", err)
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	s := scheduler.New(client, logger)
 	if err := s.Run(ctx); err != nil {
 		logger.Error("scheduler exited with error", "err", err)
 		os.Exit(1)
