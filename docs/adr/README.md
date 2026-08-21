@@ -11,3 +11,5 @@ This folder records the significant technical decisions made while building moir
 |[0004](0004-required-vs-preferred-scheduling-constraints.md) |Required constraints are filters, preferred constraints are scoring|
 |[0005](0005-assumed-pod-cache.md)|In-memory assumed-pod cache to close the double-bind race|
 |[0006](0006-custom-plugin-interfaces-vs-upstream-framework.md)|Custom Filter/Score interfaces now, upstream framework deferred|
+|[0007](0007-pluggable-scoring-strategy.md)|Single-strategy scoring selection via Config, not multi-plugin scoring|
+|[0008](0008-leader-election.md)|Leader election via client-go Lease, not a custom mechanism|
