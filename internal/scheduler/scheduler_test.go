@@ -53,7 +53,10 @@ func TestPickNode_ChoosesFeasibleNode(t *testing.T) {
 		readyNode("small", "1", "2Gi"),
 		readyNode("large", "8", "16Gi"),
 	)
-	s := New(client, discardLogger())
+	s, err := New(client, discardLogger(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("unexpected error constructing scheduler: %v", err)
+	}
 
 	pod := podRequesting("p1", "4", "8Gi")
 	node, err := s.pickNode(context.Background(), pod)
@@ -67,10 +70,13 @@ func TestPickNode_ChoosesFeasibleNode(t *testing.T) {
 
 func TestPickNode_NoFeasibleNode_ReturnsError(t *testing.T) {
 	client := fake.NewSimpleClientset(readyNode("small", "1", "2Gi"))
-	s := New(client, discardLogger())
+	s, err := New(client, discardLogger(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("unexpected error constructing scheduler: %v", err)
+	}
 
 	pod := podRequesting("p1", "4", "8Gi")
-	_, err := s.pickNode(context.Background(), pod)
+	_, err = s.pickNode(context.Background(), pod)
 	if err == nil {
 		t.Fatal("expected error when no node has capacity")
 	}
@@ -81,7 +87,10 @@ func TestPickNode_PrefersLessAllocatedNode(t *testing.T) {
 		readyNode("busy", "4", "8Gi"),
 		readyNode("empty", "4", "8Gi"),
 	)
-	s := New(client, discardLogger())
+	s, err := New(client, discardLogger(), DefaultConfig())
+	if err != nil {
+		t.Fatalf("unexpected error constructing scheduler: %v", err)
+	}
 
 	// Pre-occupy "busy" via the assume cache to simulate existing load
 	// without needing a real bound pod in the fake clientset.
