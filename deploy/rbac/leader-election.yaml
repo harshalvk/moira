@@ -1,0 +1,26 @@
+# Grants moira permission to create/update the Lease object leader
+# election depends on. Required for Step 8 to function in-cluster —
+# without this, every replica will fail to acquire leadership.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: moira-leader-election
+  namespace: default
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: moira-leader-election
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: moira
+    namespace: default
+roleRef:
+  kind: Role
+  name: moira-leader-election
+  apiGroup: rbac.authorization.k8s.io

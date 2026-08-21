@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/harshalvk/moira/internal/leaderelection"
 	"github.com/harshalvk/moira/internal/scheduler"
 	"github.com/harshalvk/moira/internal/version"
 	"k8s.io/client-go/kubernetes"
@@ -17,34 +18,52 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	logger.Info("starting moira", "version", version.Version)
 
-	config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+	kubeconfig, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
 	if err != nil {
 		logger.Error("failed to load kubeconfig", "err", err)
 		os.Exit(1)
 	}
 
-	client, err := kubernetes.NewForConfig(config)
+	client, err := kubernetes.NewForConfig(kubeconfig)
 	if err != nil {
 		logger.Error("failed to create client", "err", err)
 		os.Exit(1)
 	}
 
-	cfg := scheduler.DefaultConfig()
+	schedCfg := scheduler.DefaultConfig()
 	if strategy := os.Getenv("MOIRA_STRATEGY"); strategy != "" {
-		cfg.Strategy = scheduler.Strategy(strategy)
+		schedCfg.Strategy = scheduler.Strategy(strategy)
 	}
 
-	s, err := scheduler.New(client, logger, cfg)
+	s, err := scheduler.New(client, logger, schedCfg)
 	if err != nil {
 		logger.Error("failed to construct scheduler", "err", err)
 		os.Exit(1)
 	}
 
+	identity := os.Getenv("POD_NAME")
+	if identity == "" {
+		identity, _ = os.Hostname()
+	}
+
+	leCfg := leaderelection.DefaultConfig(identity)
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		leCfg.Namespace = ns
+	}
+	if os.Getenv("MOIRA_LEADER_ELECTION_DISABLED") == "true" {
+		leCfg.Enabled = false
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := s.Run(ctx); err != nil {
-		logger.Error("scheduler exited with error", "err", err)
+	err = leaderelection.Run(ctx, client, leCfg, logger, func(leadCtx context.Context) {
+		if runErr := s.Run(leadCtx); runErr != nil {
+			logger.Error("scheduler exited with error", "err", runErr)
+		}
+	})
+	if err != nil {
+		logger.Error("leader election failed", "err", err)
 		os.Exit(1)
 	}
 }
