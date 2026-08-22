@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/harshalvk/moira/internal/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
@@ -50,10 +51,12 @@ func Run(ctx context.Context, client kubernetes.Interface, cfg Config, logger *s
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(leadCtx context.Context) {
 				logger.Info("acquired leadership", "identity", cfg.Identity)
+				metrics.IsLeader.Set(1)
 				onStartedLeading(leadCtx)
 			},
 			OnStoppedLeading: func() {
 				logger.Warn("lost leadership", "identity", cfg.Identity)
+				metrics.IsLeader.Set(0)
 			},
 			OnNewLeader: func(identity string) {
 				if identity != cfg.Identity {
