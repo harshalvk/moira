@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,6 +14,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/harshalvk/moira/internal/framework"
+	"github.com/harshalvk/moira/internal/metrics"
 	"github.com/harshalvk/moira/internal/plugins/nodeaffinity"
 	"github.com/harshalvk/moira/internal/plugins/noderesourcesfit"
 	"github.com/harshalvk/moira/internal/plugins/noderesourcesleastallocated"
@@ -92,16 +94,23 @@ func (s *Scheduler) handlePod(ctx context.Context, pod *corev1.Pod) {
 		return
 	}
 
+	start := time.Now()
+
 	node, err := s.pickNode(ctx, pod)
 	if err != nil {
+		metrics.SchedulingAttempts.WithLabelValues("failed").Inc()
 		s.logger.Error("no node fits pod", "pod", pod.Name, "err", err)
 		return
 	}
 
 	if err := s.bind(ctx, pod, node); err != nil {
+		metrics.SchedulingAttempts.WithLabelValues("failed").Inc()
 		s.logger.Error("bind failed", "pod", pod.Name, "node", node, "err", err)
 		return
 	}
+
+	metrics.SchedulingLatency.Observe(float64(time.Since(start).Seconds()))
+	metrics.SchedulingAttempts.WithLabelValues("scheduled").Inc()
 
 	s.cache.Assume(pod, node)
 	s.logger.Info("scheduled pod", "pod", pod.Name, "node", node)

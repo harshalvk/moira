@@ -2,7 +2,9 @@ package framework
 
 import (
 	"log/slog"
+	"time"
 
+	"github.com/harshalvk/moira/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -33,14 +35,17 @@ func (r *Registry) RegisterScore(p ScorePlugin, weight int64) {
 }
 
 // RunFilterPlugins returns the subset of nodeInfos that pass every filter.
-// Short-circuits per-node on first failing filter (matches real framework
 // behavior - no point running remaining filters once one has rejected)
+// Short-circuits per-node on first failing filter (matches real framework
 func (r *Registry) RunFilterPlugins(pod *corev1.Pod, nodeInfos []*NodeInfo) []*NodeInfo {
 	var feasible []*NodeInfo
 	for _, ni := range nodeInfos {
 		ok := true
 		for _, p := range r.filters {
+			start := time.Now()
 			status := p.Filter(pod, ni)
+			metrics.PluginDuration.WithLabelValues(p.Name(), "filter").Observe(float64(time.Since(start).Seconds()))
+
 			if !status.IsSuccess() {
 				r.logger.Debug("node filtered out", "node", ni.Node.Name, "plugin", p.Name(), "reason", status.Messaeg)
 				ok = false
@@ -62,7 +67,10 @@ func (r *Registry) RunScorePlugins(pod *corev1.Pod, nodeInfos []*NodeInfo) map[s
 	for _, ni := range nodeInfos {
 		var total int64
 		for _, sw := range r.scores {
+			start := time.Now()
 			score, status := sw.Plugin.Score(pod, ni)
+			metrics.PluginDuration.WithLabelValues(sw.Plugin.Name(), "score").Observe(float64(time.Since(start).Seconds()))
+
 			if !status.IsSuccess() {
 				r.logger.Warn("score plugin failed", "node", ni.Node.Name, "plugin", sw.Plugin.Name(), "reason", status.Messaeg)
 				continue
