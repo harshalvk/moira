@@ -13,3 +13,4 @@ This folder records the significant technical decisions made while building moir
 |[0006](0006-custom-plugin-interfaces-vs-upstream-framework.md)|Custom Filter/Score interfaces now, upstream framework deferred|
 |[0007](0007-pluggable-scoring-strategy.md)|Single-strategy scoring selection via Config, not multi-plugin scoring|
 |[0008](0008-leader-election.md)|Leader election via client-go Lease, not a custom mechanism|
+|[0009](0009-prometheus-metrics.md)|Prometheus metrics via a dedicated, non-leader-gated HTTP server|

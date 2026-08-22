@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/harshalvk/moira/internal/leaderelection"
+	"github.com/harshalvk/moira/internal/metricsserver"
 	"github.com/harshalvk/moira/internal/scheduler"
 	"github.com/harshalvk/moira/internal/version"
 	"k8s.io/client-go/kubernetes"
@@ -56,6 +57,17 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	metricsAddr := os.Getenv("MOIRA_METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = ":8080"
+	}
+
+	go func() {
+		if err := metricsserver.Run(ctx, metricsAddr, logger); err != nil {
+			logger.Error("metrics server error", "err", err)
+		}
+	}()
 
 	err = leaderelection.Run(ctx, client, leCfg, logger, func(leadCtx context.Context) {
 		if runErr := s.Run(leadCtx); runErr != nil {
